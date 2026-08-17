@@ -53,6 +53,12 @@ public:
     void join();
 
 public:
+    /*
+    static 的使用这里在 getName、setName 方法上使用 static，
+    目的是让这些方法可以直接通过类名 + 作用域限定符访问，
+    不需要依赖具体对象，使用更方便。
+    Thread::GetName;  这样就可以直接调用类内的函数，不需要先通过构造函数建立对象。
+    */
     // 获取系统分配的线程id
 	static pid_t GetThreadId();
     // 获取当前所在线程
@@ -68,7 +74,7 @@ private:
     static void* run(void* arg);
 
 private:
-    pid_t m_id = -1;            // 进程ID
+    pid_t m_id = -1;            // 线程ID
     pthread_t m_thread = 0;     // 线程
 
     // 线程需要运行的函数
