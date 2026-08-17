@@ -16,7 +16,7 @@ namespace sylar
 class Fiber : public std::enable_shared_from_this<Fiber>
 {
 public:
-    // 协程状态
+    // 定义协程的状态，属于协程的上下文切换的时候，需要被保存
     enum State
     {
         READY,
@@ -26,56 +26,35 @@ public:
 
 private:
     // 仅由GetThis()调用 -> 私有 -> 创建主协程  
+    // Fiber()是私有的，只能被GetThis()方法调用，用于创建主协程。
 	Fiber();
 
 public:
     Fiber(std::function<void()> cb, size_t stacksize = 0, bool run_in_scheduler = true);
     ~Fiber();
 
-    // 重用一个协程
-    void reset(std::function<void()> cb);
-
-    // 任务线程恢复执行
-	void resume();
-
-    // 任务线程让出执行权
-	void yield();
-
-    uint64_t getId() const {return m_id;}
-    
+public:
+    void reset(std::function<void()> cb);//重置协程状态和⼊⼝函数，复⽤栈空间，不重新创建栈
+    void resume();//恢复协程执行。
+    void yield();//将执行全还给调度协程
+    uint64_t getId() const {return m_id;}//获取唯一标识
     State getState() const {return m_state;}
 
 public:
-    // 设置当前运行的协程
-	static void SetThis(Fiber *f);
-
-    // 得到当前运行的协程 
-	static std::shared_ptr<Fiber> GetThis();
-
-    // 设置调度协程（默认为主协程）
-	static void SetSchedulerFiber(Fiber* f);
-
-    // 得到当前运行的协程id
-	static uint64_t GetFiberId();
-
-    // 协程函数
-	static void MainFunc();	
+    static void SetThis(Fiber *f);          //设置当前运行的协程。
+    static std::shared_ptr<Fiber> GetThis();//获取当前运行的协程的shared_ptr实例。
+    static void SetSchedulerFiber(Fiber* f);//设置调度协程，默认主协程
+    static uint64_t GetFiberId();           //获取当前运行的协程的ID。
+    static void MainFunc();                 //协程的主函数，入口点	
 
 private:
-    // id
-    uint64_t m_id = 0;
-    // 栈大小
-    uint32_t m_stack_size = 0;
-    // 协程状态
-	State m_state = READY;
-	// 协程上下文
-	ucontext_t m_ctx;
-    // 协程栈指针
-	void* m_stack = nullptr;
-	// 协程函数
-	std::function<void()> m_cb;
-	// 是否让出执行权交给调度协程
-	bool m_runInScheduler;
+    uint64_t m_id = 0;//协程唯一标识符
+    uint32_t m_stacksize = 0;//栈的大小
+    State m_state = READY;//协程的初始状态是ready
+    ucontext_t m_ctx;//协程的上下文
+    void* m_stack = nullptr;//协程栈的指针
+    std::function<void()> m_cb;//协程的回调函数
+    bool m_runInScheduler;//标志是否将执行器交给调度协程
 
 public:
     std::mutex m_mutex;
