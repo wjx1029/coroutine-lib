@@ -195,13 +195,13 @@ void Fiber::MainFunc()                 //协程的主函数，入口点
     std::shared_ptr<Fiber> cur = GetThis();
     assert(cur != nullptr);
 
-    cur->m_cb();
-    cur->m_cb = nullptr;
+    cur->m_cb();            //真正执行任务的地方
+    cur->m_cb = nullptr;    //防止悬空引用
     cur->m_state = TERM;
 
     // 运行完毕 -> 让出执行权
-	auto raw_ptr = cur.get();
-    cur.reset();
+	auto raw_ptr = cur.get();   //获取原始指针，不增加引用计数
+    cur.reset();                //引用计数-1，如果此时为0，协程对象销毁
     raw_ptr->yield();
 }
 
