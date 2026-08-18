@@ -33,7 +33,7 @@ Fiber::Fiber()
 }
 
 
-Fiber::Fiber(std::function<void()> cb, size_t stacksize = 0, bool run_in_scheduler = true)
+Fiber::Fiber(std::function<void()> cb, size_t stacksize, bool run_in_scheduler)
 : m_cb(cb), m_runInScheduler(run_in_scheduler)
 {
     m_state = READY;
