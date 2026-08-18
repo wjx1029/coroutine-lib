@@ -85,17 +85,74 @@ Fiber::~Fiber()
 
 void Fiber::reset(std::function<void()> cb)//重置协程状态和⼊⼝函数，复⽤栈空间，不重新创建栈
 {
+    assert(m_stack != nullptr && m_state == TERM);
+
+    m_state = READY;
+    m_cb = cb;
+
+    if (getcontext(&m_ctx))
+    {
+        std::cerr << "reset() failed\n";
+        pthread_exit(NULL);
+    }
+
+    m_ctx.uc_link = nullptr;
+    m_ctx.uc_stack.ss_sp = m_stack;
+    m_ctx.uc_stack.ss_size = m_stacksize;
+    makecontext(&m_ctx, &Fiber::MainFunc, 0);
 
 }
 
 void Fiber::resume()   //恢复协程执行。
 {
+    assert(m_state == READY);
 
+    m_state = RUNNING;
+
+    if (m_runInScheduler)//这里的切换就相当于非对称协程函数那个当a执行完成后会将执行权交给b
+    {
+        SetThis(this);//这里的setthis实际是就是目前工作的协程。
+        if (swapcontext(&(t_scheduler_fiber->m_ctx), &m_ctx))
+        {
+            std::cerr << "resume() to t_scheduler_fiber failed\n";
+            pthread_exit(NULL);
+        }
+    }
+    else
+    {
+        SetThis(this);
+        if (swapcontext(&(t_thread_fiber->m_ctx), &m_ctx))
+        {
+            std::cerr << "resume() to t_thread_fiber failed\n";
+            pthread_exit(NULL);
+        }
+    }
 }
 
-void Fiber::yield()    //将执行全还给调度协程
+void Fiber::yield()    //将执行权还给调度协程
 {
+    assert(m_state == RUNNING || m_state == TERM);
 
+    if (m_state != TERM)    m_state = READY;
+    
+    if (m_runInScheduler)
+    {
+        SetThis(t_scheduler_fiber);
+        if (swapcontext(&m_ctx, &(t_scheduler_fiber->m_ctx)))
+        {
+            std::cerr << "yield() to t_scheduler_fiber failed\n";
+            pthread_exit(NULL);
+        }
+    }
+    else
+    {
+        SetThis(t_thread_fiber.get());
+        if (swapcontext(&m_ctx, &(t_thread_fiber->m_ctx)))
+        {
+            std::cerr << "yield() to t_thread_fiber failed\n";
+            pthread_exit(NULL);
+        }
+    }
 }
 
 void Fiber::SetThis(Fiber *f)          //设置当前运行的协程。
