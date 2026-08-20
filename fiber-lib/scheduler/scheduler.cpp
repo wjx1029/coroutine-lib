@@ -1,6 +1,6 @@
 #include "scheduler.h"
 
-static bool debug = false;
+static bool debug = true;
 
 namespace sylar
 {
@@ -117,7 +117,7 @@ void Scheduler::stop()
     if (m_useCaller)
         assert(GetThis() == this);
     else
-        assert(GetThis() != this);
+        assert(GetThis() == this);
 
     //调用tickle()的目的唤醒空闲线程或协程，防止m_scheduler或其他线程处于永久阻塞在等待任务的状态中
     for (size_t i = 0; i < m_threadCount; i++)
@@ -224,7 +224,7 @@ void Scheduler::run()
                 std::lock_guard<std::mutex> lock(task.fiber->m_mutex);
                 if(task.fiber->getState()!=Fiber::TERM)
                 {
-                    task.fiber->resume();
+                    task.fiber->resume();   // 调度任务协程,执行具体任务
                 }
             }
             m_activeThreadNum--;//线程完成任务后就不再处于活跃状态，而是进入空闲状态，因此需要将活跃线程计数减一。
@@ -235,7 +235,7 @@ void Scheduler::run()
             std::shared_ptr<Fiber> cb_fiber = std::make_shared<Fiber>(task.cb);
             {
                 std::lock_guard<std::mutex> lock(cb_fiber->m_mutex);
-                cb_fiber->resume();
+                cb_fiber->resume();         // 调度任务协程,执行具体任务
             }
             m_activeThreadNum--;
             task.reset();
