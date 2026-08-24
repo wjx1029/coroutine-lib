@@ -8,6 +8,7 @@
 #include <assert.h>
 #include <functional>
 #include <mutex>
+#include <shared_mutex>
 
 namespace sylar 
 {
