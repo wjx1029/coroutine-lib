@@ -19,7 +19,7 @@ IOManager* IOManager::GetThis()
 }
 
 // ===================================================================
-//  OManager::FdContext::getEventContext(Event event)
+//  OManager::FdContext::getEventContext
 // ===================================================================
 
 IOManager::FdContext::EventContext& IOManager::FdContext::getEventContext(Event event)
@@ -148,6 +148,76 @@ void IOManager::contextResize(size_t size)
             m_fdContexts[i]->fd = i;// 将文件描述符的编号赋值给 fd
         }
     }
+}
+
+// ===================================================================
+// IOManager::addEvent
+// ===================================================================
+int IOManager::addEvent(int fd, Event event, std::function<void()> cb)
+{
+    //查找FdContext对象
+    // attemp to find FdContext
+    FdContext *fd_ctx = nullptr;
+
+    std::shared_lock<std::shared_mutex> read_lock(m_mutex);//使用读写锁
+    if ((int)m_fdContexts.size() > fd)//如果说传入的fd在数组里面则查找然后初始化FdContext的对象
+    {
+        fd_ctx = m_fdContexts[fd];
+        read_lock.unlock();
+    }
+    else//不存在则重新分配数组的size来初始化FdContext的对象
+    {
+        read_lock.unlock();
+        std::unique_lock<std::shared_mutex> write_lock(m_mutex);
+        contextResize(fd * 1.5);                                            					
+        fd_ctx = m_fdContexts[fd];
+    }
+
+    //一旦找到或者创建Fdcontextt的对象后，加上互斥锁，确保Fdcontext的状态不会被其他线程修改
+    std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+    // the event has already been added
+     if(fd_ctx->events & event)//判断事件是否存在存在？是就返回-1，因为相同的事件不能重复添加
+     {
+         return -1;
+     }
+
+    // add new event
+ 	//所以这里就很好判断了如果已经存在就fd_ctx->events本身已经有读或写，就是修改已经有事件，如果不存在就是none事件的情况，就添加事件。
+    int op = fd_ctx->events ? EPOLL_CTL_MOD : EPOLL_CTL_ADD;
+    epoll_event epevent;
+    epevent.events   = EPOLLET | fd_ctx->events | event;
+    epevent.data.ptr = fd_ctx; 
+    //函数将事件添加到 epoll 中。如果添加失败，打印错误信息并返回 -1。
+    int rt = epoll_ctl(m_epfd, op, fd, &epevent);
+    if (rt)
+    {
+        std::cerr << "addEvent::epoll_ctl failed: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    ++m_pendingEventCount;//原子计数器，待处理的事件++；
+
+    // update fdcontext
+    fd_ctx->events = (Event)(fd_ctx->events | event);//更新 FdContext 的 events 成员，记录当前的所有事件。注意events可以监听读和写的组合，如果fd_ctx->events为none,就相当于直接是fd_ctx->events = event
+
+    // update event context
+    //设置事件上下文
+    FdContext::EventContext& event_ctx = fd_ctx->getEventContext(event);
+    assert(!event_ctx.scheduler && !event_ctx.fiber && !event_ctx.cb);//确保 EventContext 中没有其他正在执行的调度器、协程或回调函数。
+    event_ctx.scheduler = Scheduler::GetThis();//设置调度器为当前的调度器实例（Scheduler::GetThis()）。
+    //如果提供了回调函数 cb，则将其保存到 EventContext 中；否则，将当前正在运行的协程保存到 EventContext 中，并确保协程的状态是正在运行。
+    if (cb)
+    {
+        event_ctx.cb.swap(cb);
+    }    
+    else
+    {
+        event_ctx.fiber = Fiber::GetThis();//需要确保存在主协程
+        assert(event_ctx.fiber->getState() == Fiber::RUNNING);
+    }
+    return 0;
+
 }
 
 
