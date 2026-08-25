@@ -280,9 +280,57 @@ bool IOManager::delEvent(int fd, Event event)
 }
 
 // ===================================================================
-// IOManager::delEvent
+// IOManager::cancelEvent
 // ===================================================================
 
+bool IOManager::cancelEvent(int fd, Event event)
+{
+    // attemp to find FdContext
+    FdContext *fd_ctx = nullptr;
+
+    std::shared_lock<std::shared_mutex> read_lock(m_mutex);//读锁
+
+    if ((int)m_fdContexts.size() > fd)//查找到FdContext如果没查找到代表数组中没这个文件描述符直接，返回false；
+    {
+        fd_ctx = m_fdContexts[fd];
+        read_lock.unlock();
+    }
+    else
+    {
+        read_lock.unlock();
+        return false;
+    }
+
+    //找到后添加互斥锁
+    std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+    // the event doesn't exist
+    if (!(fd_ctx->events & event))//如果事件不相同就返回false，否则就继续
+    {
+        return false;
+    }
+
+    // delete the event
+	//因为这里要删除事件，对原有的事件状态取反就是删除原有的状态比如说传入参数是读事件，我们取反就是删除了这个读事件但可能还要写事件
+    Event new_events = (Event)(fd_ctx->events & ~event);
+    int op  = new_events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+    epoll_event epevent;
+    epevent.events   = EPOLLET | new_events;
+    epevent.data.ptr = fd_ctx;//这一步是为了在 epoll 事件触发时能够快速找到与该事件相关联的 FdContext 对象。
+
+    int rt = epoll_ctl(m_epfd, op, fd, &epevent);
+    if (rt)
+    {
+        std::cerr << "delEvent::epoll_ctl failed: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    --m_pendingEventCount;//减少了待处理的事件
+
+    // update fdcontext, event context and trigger
+    fd_ctx->triggerEvent(event);//这个代码和上面那个delEvent一致好像就是最后的处理不同一个是重置，一个是调用事件的回调函数
+    return true;
+}
 
 
 }
