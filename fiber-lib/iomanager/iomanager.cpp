@@ -81,8 +81,74 @@ void IOManager::FdContext::triggerEvent(IOManager::Event event)
 
 
 // ===================================================================
-// 
+// IOManager的构造函数
 // ===================================================================
+
+IOManager::IOManager(size_t threads, bool use_caller, const std::string &name)
+: Scheduler(threads, use_caller, name), TimerManager()
+{
+    // create epoll fd
+    m_epfd = epoll_create(5000);//5000，epoll_create 的参数实际上在现代 Linux 内核中已经被忽略，最早版本的 Linux 中，这个参数用于指定 epoll 内部使用的事件表的大小
+    assert(m_epfd > 0);//错误就终止程序
+
+    // create pipe
+    int rt = pipe(m_tickleFds);//创建管道的函数规定了m_tickleFds[0]是读端，1是写端
+    assert(!rt);//错误就终止程序
+
+    //将管道的监听注册到epoll上
+    epoll_event event;
+    event.events  = EPOLLIN | EPOLLET; // Edge Triggered，设置标志位，并且采用边缘触发和读事件。
+    event.data.fd = m_tickleFds[0];
+
+    // non-blocked
+    //修改管道文件描述符以非阻塞的方式，配合边缘触发。
+    rt = fcntl(m_tickleFds[0], F_SETFL, O_NONBLOCK);
+    assert(!rt);//每次需要判断rt是否成功
+
+    rt = epoll_ctl(m_epfd, EPOLL_CTL_ADD, m_tickleFds[0], &event);//将 m_tickleFds[0];作为读事件放入到event监听集合中
+    assert(!rt);
+
+    contextResize(32);//初始化了一个包含 32 个文件描述符上下文的数组
+
+    start();//启动 Scheduler，开启线程池，准备处理任务。
+}
+
+// ===================================================================
+// IOManager的析构函数
+// ===================================================================
+
+IOManager::~IOManager()
+{
+    stop();//关闭scheduler类中的线程池，让任务全部执行完后线程安全退出
+    close(m_epfd);//关闭epoll的句柄
+    close(m_tickleFds[0]);close(m_tickleFds[1]);//关闭管道读端写端
+    //将fdcontext文件描述符一个个关闭
+    for (size_t i = 0; i < m_fdContexts.size(); ++i)
+    {
+        if (m_fdContexts[i])
+        {
+            delete m_fdContexts[i];
+        }
+    }
+}
+
+// ===================================================================
+// IOManager::ContextResize()
+// ===================================================================
+
+void IOManager::contextResize(size_t size)
+{
+    m_fdContexts.resize(size);//调整m_fdContexts的大小
+    // 遍历 m_fdContexts 向量，初始化尚未初始化的 FdContext 对象
+    for (size_t i = 0; i < m_fdContexts.size(); ++i)
+    {
+        if (m_fdContexts[i] == nullptr)
+        {
+            m_fdContexts[i] = new FdContext();
+            m_fdContexts[i]->fd = i;// 将文件描述符的编号赋值给 fd
+        }
+    }
+}
 
 
 
