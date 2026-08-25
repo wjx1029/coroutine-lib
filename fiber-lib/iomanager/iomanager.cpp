@@ -332,5 +332,67 @@ bool IOManager::cancelEvent(int fd, Event event)
     return true;
 }
 
+// ===================================================================
+// IOManager::cancelAll
+// ===================================================================
+
+bool IOManager::cancelAll(int fd)
+{
+    // attemp to find FdContext
+    FdContext *fd_ctx = nullptr;
+
+    std::shared_lock<std::shared_mutex> read_lock(m_mutex);//读锁
+
+    if ((int)m_fdContexts.size() > fd)//查找到FdContext如果没查找到代表数组中没这个文件描述符直接，返回false；
+    {
+        fd_ctx = m_fdContexts[fd];
+        read_lock.unlock();
+    }
+    else
+    {
+        read_lock.unlock();
+        return false;
+    }
+
+    //找到后添加互斥锁
+    std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+    // the event doesn't exist
+    if (!fd_ctx->events)//如果没有事件就返回false，否则就继续
+    {
+        return false;
+    }
+
+    // delete all events
+    int op  = EPOLL_CTL_DEL;
+    epoll_event epevent;
+    epevent.events   = 0;
+    epevent.data.ptr = fd_ctx;//这一步是为了在 epoll 事件触发时能够快速找到与该事件相关联的 FdContext 对象。
+
+    int rt = epoll_ctl(m_epfd, op, fd, &epevent);
+    if (rt)
+    {
+        std::cerr << "delEvent::epoll_ctl failed: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    // update fdcontext, event context and trigger
+    if (fd_ctx->events & READ)
+    {
+        fd_ctx->triggerEvent(READ);
+        --m_pendingEventCount;
+    }
+
+    if (fd_ctx->events & WRITE)
+    {
+        fd_ctx->triggerEvent(WRITE);
+        --m_pendingEventCount;
+    }
+
+    assert(fd_ctx->events == 0);
+    return true;
+}
+
+
 
 }
