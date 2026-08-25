@@ -153,6 +153,7 @@ void IOManager::contextResize(size_t size)
 // ===================================================================
 // IOManager::addEvent
 // ===================================================================
+
 int IOManager::addEvent(int fd, Event event, std::function<void()> cb)
 {
     //查找FdContext对象
@@ -219,6 +220,68 @@ int IOManager::addEvent(int fd, Event event, std::function<void()> cb)
     return 0;
 
 }
+
+// ===================================================================
+// IOManager::delEvent
+// ===================================================================
+
+bool IOManager::delEvent(int fd, Event event)
+{
+    // attemp to find FdContext
+    FdContext *fd_ctx = nullptr;
+
+    std::shared_lock<std::shared_mutex> read_lock(m_mutex);//读锁
+
+    if ((int)m_fdContexts.size() > fd)//查找到FdContext如果没查找到代表数组中没这个文件描述符直接，返回false；
+    {
+        fd_ctx = m_fdContexts[fd];
+        read_lock.unlock();
+    }
+    else
+    {
+        read_lock.unlock();
+        return false;
+    }
+
+    //找到后添加互斥锁
+    std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+    // the event doesn't exist
+    if (!(fd_ctx->events & event))//如果事件不相同就返回false，否则就继续
+    {
+        return false;
+    }
+
+    // delete the event
+	//因为这里要删除事件，对原有的事件状态取反就是删除原有的状态比如说传入参数是读事件，我们取反就是删除了这个读事件但可能还要写事件
+    Event new_events = (Event)(fd_ctx->events & ~event);
+    int op  = new_events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+    epoll_event epevent;
+    epevent.events   = EPOLLET | new_events;
+    epevent.data.ptr = fd_ctx;//这一步是为了在 epoll 事件触发时能够快速找到与该事件相关联的 FdContext 对象。
+
+    int rt = epoll_ctl(m_epfd, op, fd, &epevent);
+    if (rt)
+    {
+        std::cerr << "delEvent::epoll_ctl failed: " << strerror(errno) << std::endl;
+        return -1;
+    }
+
+    --m_pendingEventCount;//减少了待处理的事件
+
+    // update fdcontext
+    fd_ctx->events = new_events;//所以因为要先将fd_ctx的状态放入epevent.data.ptr所以就没先去更新，这也是为什么需要单独写Event new_events
+
+    // update event context
+	//重置上下文
+    FdContext::EventContext& event_ctx = fd_ctx->getEventContext(event);
+    fd_ctx->resetEventContext(event_ctx);
+    return true;
+}
+
+// ===================================================================
+// IOManager::delEvent
+// ===================================================================
 
 
 
