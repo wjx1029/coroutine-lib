@@ -409,10 +409,149 @@ void IOManager::tickle()
     assert(rt == 1);
 }
 
+// ===================================================================
+// IOManager::tickle
+// ===================================================================
+
+bool IOManager::stopping()
+{
+    uint64_t timeout = getNextTimer();
+    // no timers left and no pending events left with the Scheduler::stopping()
+    return timeout == ~0ull && m_pendingEventCount == 0 && Scheduler::stopping();
+}
+
+// ===================================================================
+// IOManager::idle
+// ===================================================================
+/*
+idle 协程是 IO 调度器的核心，它在调度器无任务可执行时被切入，负责监听 IO 事件和定时器任务。其具体实现步骤如下：
+●
+第一步：初始化事件存储空间
+定义 epoll_wait 单次能处理的最大事件数 MAX_EVENTS（通常设为 256）。利用 std::unique_ptr<epoll_event[]> 在堆上动态分配内存，用于存储就绪事件数组，确保资源在函数退出时能自动释放。
+●
+第二步：进入主循环与阻塞监听
+整个逻辑运行在一个 while(true) 循环中。首先检查 stopping() 状态以决定是否退出。随后进入 epoll_wait 阻塞调用。注意其超时机制：通过 getNextTimer() 获取定时器堆中最近的超时剩余时间，并与系统默认的 MAX_TIMEOUT（如 5000ms）取最小值，作为 epoll_wait 的超时参数。这保证了定时器能准时触发。
+●
+第三步：处理超时定时器
+当 epoll_wait 返回后（无论是超时还是事件触发），首先调用 listExpiredCb(cbs)。该函数会收集所有已到期的定时器回调，并将它们一次性推入调度器的任务队列中，等待后续执行。
+●
+第四步：处理 Tickle 唤醒信号
+遍历 epoll_wait 返回的就绪事件数组。若发现就绪的是 m_tickleFds[0]（管道读端），说明有其他线程通过 tickle() 唤醒了当前线程。此时通过一个 while 循环将管道中的数据彻底读完（直到返回 -1 且 errno 为 EAGAIN），从而清除唤醒标志。
+●
+第五步：事件映射与归类
+对于其他的 IO 就绪事件，通过 event.data.ptr 获取绑定的文件描述符上下文 fd_ctx。由于 Sylar 抽象层只对外暴露 READ 和 WRITE 事件，因此需要对 epoll 的原生事件进行转换：如果发生 EPOLLERR（错误）或 EPOLLHUP（挂起），将其映射为该 fd 已注册的 READ 或 WRITE 事件。这样可以确保即使发生错误，相关的协程也能被唤醒去处理异常（例如执行 read 并发现返回 0 或错误）。
+●
+第六步：更新状态与触发调度
+根据实际发生的 real_events（读、写或两者组合），计算该 fd 剩余的关注事件 left_events = (fd_ctx->events & ~real_events)。
+    ○ 根据是否还有剩余事件，调用 epoll_ctl 执行 MOD（修改）或 DEL（删除）操作。
+    ○ 调用 triggerEvent()：将触发的读/写回调函数或协程推入任务队列。这一步是 IO 任务转为普通调度任务的关键。
+●
+第七步：协程让出（Yield）
+在处理完本次所有的就绪事件后，idle 协程主动调用 yield() 让出 CPU 执行权。此时，调度器会立即切入刚才由定时器或 IO 事件产生的新任务。等到所有任务再次执行完毕，调度器会重新回到 idle 协程开始下一轮监听。
+*/
+
+void IOManager::idle()
+{
+    static const uint64_t MAX_EVENTS = 256;
+
+    std::unique_ptr<epoll_event[]> events(new epoll_event[MAX_EVENTS]);
+
+    while (true)
+    {
+        if(debug) std::cout << "IOManager::idle(),run in thread: " << Thread::GetThreadId() << std::endl;
+
+        if (stopping())
+        {
+            if(debug) std::cout << "name = " << getName() << " idle exits in thread: " << Thread::GetThreadId() << std::endl;
+            break;
+        }
+
+        int rt = 0;
+        while (true)
+        {
+            static const uint64_t MAX_TIMEOUT = 5000;
+            uint64_t next_timeout = getNextTimer();
+            next_timeout = std::min(MAX_TIMEOUT, next_timeout);
+
+            rt = epoll_wait(m_epfd, events.get(), MAX_EVENTS, (int)next_timeout);
+            if (rt < 0 && errno == EINTR)
+                continue;
+            else
+                break;
+        }
+
+        std::vector<std::function<void()>> cbs;
+        listExpiredCb(cbs);
+        if (!cbs.empty())
+        {
+            for (const auto& cb : cbs)
+            {
+                scheduleLock(cb);
+            }
+            cbs.clear();
+        }
+
+        for (int i = 0; i < rt; ++i)
+        {
+            epoll_event& event = events[i];
+
+            if (event.data.fd == m_tickleFds[0])
+            {
+                uint8_t dummy[256];
+                while (read(m_tickleFds[0], dummy, sizeof(dummy)) > 0);
+                continue;
+            }
+
+            FdContext *fd_ctx = (FdContext*)event.data.ptr;
+            std::lock_guard<std::mutex> lock(fd_ctx->mutex);
+
+            if (event.events & (EPOLLERR | EPOLLHUP))
+            {
+                event.events |= (EPOLLIN | EPOLLOUT) & fd_ctx->events;
+            }
+
+            int real_events = NONE;
+            if (event.events & EPOLLIN)
+            {
+                real_events |= READ;
+            }
+            if (event.events & EPOLLOUT)
+            {
+                real_events |= WRITE;
+            }
+
+            if ((fd_ctx->events & real_events) == NONE)
+            {
+                continue;
+            }
 
 
+            int left_events = (fd_ctx->events & ~real_events);
+            int op          = left_events ? EPOLL_CTL_MOD : EPOLL_CTL_DEL;
+            event.events    = EPOLLET | left_events;
 
+            int rt2 = epoll_ctl(m_epfd, op, fd_ctx->fd, &event);
+            if (rt2)
+            {
+                std::cerr << "idle::epoll_ctl failed: " << strerror(errno) << std::endl; 
+                continue;
+            }
 
+            if (real_events & READ)
+            {
+                fd_ctx->triggerEvent(READ);
+                --m_pendingEventCount;
+            }
+            if (real_events & WRITE) 
+            {
+                fd_ctx->triggerEvent(WRITE);
+                --m_pendingEventCount;
+            }
+        }
+
+        Fiber::GetThis()->yield();
+    }
+}
 
 
 
