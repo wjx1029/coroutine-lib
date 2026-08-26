@@ -393,6 +393,27 @@ bool IOManager::cancelAll(int fd)
     return true;
 }
 
+// ===================================================================
+// IOManager::tickle
+// ===================================================================
+
+void IOManager::tickle()
+{
+    //这个函数在scheduler检查当前是否有线程处于空闲状态。如果没有空闲线程，函数直接返回，不执行后续操作。
+    if (!hasIdleThreads())
+    {
+        return;
+    }
+    //如果有空闲线程，函数会向管道 m_tickleFds[1] 写入一个字符 "T"。这个写操作的目的是向等待在 m_tickleFds[0]（管道的另一端）的线程发送一个信号，通知它有新任务可以处理了。
+    int rt = write(m_tickleFds[1], "T", 1);
+    assert(rt == 1);
+}
+
+
+
+
+
+
 
 
 }
