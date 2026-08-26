@@ -410,7 +410,7 @@ void IOManager::tickle()
 }
 
 // ===================================================================
-// IOManager::tickle
+// IOManager::stopping
 // ===================================================================
 
 bool IOManager::stopping()
@@ -553,6 +553,13 @@ void IOManager::idle()
     }   // end while(true)
 }
 
+// ===================================================================
+// IOManager::onTimerInsertedAtFront
+// ===================================================================
 
+void IOManager::onTimerInsertedAtFront()
+{
+    tickle();  // 唤醒可能被阻塞的 epoll_wait 调用
+}
 
 }
