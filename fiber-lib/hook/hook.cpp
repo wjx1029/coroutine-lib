@@ -434,4 +434,171 @@ int close(int fd)
 }
 
 
+// ==========================================================================================================================================================
+// 对fd进行ctl的操作函数
+// ==========================================================================================================================================================
+
+int ioctl(int fd, unsigned long request, ...)
+{
+    va_list va;//va持有处理可变参数的状态信息
+    va_start(va, request);//给va初始化让它指向可变参数的第一个参数位置。
+    void* arg = va_arg(va, void*);//将va的指向参数的以void*类型取出存放到arg中
+    va_end(va);//用于结束对 va_list 变量的操作。清理va占用的资源
+
+    if (FIONBIO == request)//用于设置非阻塞模式的命令
+    {
+        bool user_nonblock = !!*(int*)arg;//当前 ioctl 调用是为了设置或清除非阻塞模式。
+        std::shared_ptr<sylar::FdCtx> ctx = sylar::FdMgr::GetInstance()->get(fd);
+        //检查获取的上下文对象是否有效（即 ctx 是否为空）。如果上下文对象无效、文件描述符已关闭或不是一个套接字，则直接调用原始的 ioctl 函数，返回处理结果。
+        if(!ctx || ctx->isClosed() || !ctx->isSocket())
+        {
+            return ioctl_f(fd, request, arg);
+        }
+        //如果上下文对象有效，调用其 setUserNonblock 方法，将非阻塞模式设置为 user_nonblock 指定的值。这将更新文件描述符的非阻塞状态。
+        ctx->setUserNonblock(user_nonblock);
+    }
+    return ioctl_f(fd, request, arg);
+}
+
+int fcntl(int fd, int cmd, ... /* arg */ )
+{
+    va_list va; // to access a list of mutable parameters
+    va_start(va, cmd);//使其指向第一个可变参数（在 cmd 之后的参数）。
+
+    switch (cmd)
+    {
+        case F_SETFL://用于设置文件描述符的状态标志（例如，设置非阻塞模式）。
+        {
+            int arg = va_arg(va, int); // Access the next int argument
+            va_end(va);
+            std::shared_ptr<sylar::FdCtx> ctx = sylar::FdMgr::GetInstance()->get(fd);
+            //如果ctx无效，或者文件描述符关闭不是一个套接字就调用原始调用
+            if(!ctx || ctx->isClosed() || !ctx->isSocket())
+            {
+                return fcntl_f(fd, cmd, arg);
+            }
+            // 用户是否设定了非阻塞                         
+            ctx->setUserNonblock(arg & O_NONBLOCK);
+            // 最后是否阻塞根据系统设置决定
+            if(ctx->getSysNonblock())
+            {
+                arg |= O_NONBLOCK;
+            }
+            else
+            {
+                arg &= ~O_NONBLOCK;
+            }
+            return fcntl_f(fd, cmd, arg);
+        } break;
+        
+        case F_GETFL:
+        {
+            va_end(va);
+            int arg = fcntl_f(fd, cmd);//调用原始的 fcntl 函数获取文件描述符的当前状态标志。
+            std::shared_ptr<sylar::FdCtx> ctx = sylar::FdMgr::GetInstance()->get(fd);
+            //如果上下文无效、文件描述符已关闭或不是套接字，则直接返回状态标志。
+            if(!ctx || ctx->isClosed() || !ctx->isSocket())
+            {
+                return arg;
+            }
+            // 这里是呈现给用户 显示的为用户设定的值
+            // 但是底层还是根据系统设置决定的
+            if(ctx->getUserNonblock())
+            {
+                return arg | O_NONBLOCK;
+            } else
+            {
+                return arg & ~O_NONBLOCK;
+            } 
+        } break;
+
+        case F_DUPFD:                                       
+        case F_DUPFD_CLOEXEC:
+        case F_SETFD:
+        case F_SETOWN:
+        case F_SETSIG:
+        case F_SETLEASE:
+        case F_NOTIFY:
+#ifdef F_SETPIPE_SZ
+        case F_SETPIPE_SZ:
+#endif
+        {
+            int arg = va_arg(va, int);//从va获取标志位
+            va_end(va);//清理va
+            return fcntl_f(fd, cmd, arg);//调用原始调用
+        } break;
+
+        case F_GETFD:
+        case F_GETOWN:
+        case F_GETSIG:
+        case F_GETLEASE:
+#ifdef F_GETPIPE_SZ
+        case F_GETPIPE_SZ:
+#endif
+        {
+            va_end(va);//清理va变量
+            return fcntl_f(fd, cmd);//返回原始调用的结果
+        } break;
+
+        case F_SETLK://设置文件锁，如果不能立即获得锁，则返回失败。
+        case F_SETLKW://设置文件锁，且如果不能立即获得锁，则阻塞等待。
+        //获取文件锁的状态。如果文件描述符 fd 关联的文件已经被锁定，那么该命令会填充 flock 结构体，指示锁的状态。
+        case F_GETLK:
+        {
+            //从可变参数列表中获取 struct flock* 类型的指针，这个指针指向一个 flock 结构体，包含锁定操作相关的信息（如锁的类型、偏移量、锁的长度等）。
+            struct flock* arg = va_arg(va, struct flock*);
+            va_end(va);
+            return fcntl_f(fd, cmd, arg);
+        } break;
+
+        case F_GETOWN_EX://获取文件描述符 fd 所属的所有者信息。这通常用于与信号处理相关的操作，尤其是在异步 I/O 操作中。
+        case F_SETOWN_EX://设置文件描述符 fd 的所有者信息。
+        {	//和上面的思路类似
+            struct f_owner_exlock* arg = va_arg(va, struct f_owner_exlock*);//从可变参数中提取相应类型的结构体指针
+            va_end(va);
+            return fcntl_f(fd, cmd, arg);
+        } break;
+
+        default:
+        {
+            va_end(va);
+            return fcntl_f(fd, cmd);
+        }
+    }
+}
+
+
+// ==========================================================================================================================================================
+// sockop函数操
+// ==========================================================================================================================================================
+
+int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen)
+{
+    return getsockopt_f(sockfd, level, optname, optval, optlen);
+}
+
+int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t optlen)
+{
+    if(!sylar::t_hook_enable)
+    {
+        return setsockopt_f(sockfd, level, optname, optval, optlen);
+    }
+    //如果 level 是 SOL_SOCKET 且 optname 是 SO_RCVTIMEO（接收超时）或 SO_SNDTIMEO（发送超时），代码会获取与该文件描述符关联的 FdCtx 上下文对象：
+    if(level == SOL_SOCKET)
+    {
+        if(optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)
+        {
+            std::shared_ptr<sylar::FdCtx> ctx = sylar::FdMgr::GetInstance()->get(sockfd);
+            if(ctx)
+            {	//那么代码会读取传入的 timeval 结构体，将其转化为毫秒数，并调用 ctx->setTimeout 方法，记录超时设置：
+                const timeval* v = (const timeval*)optval;
+                ctx->setTimeout(optname, v->tv_sec * 1000 + v->tv_usec / 1000);
+            }
+        }
+    }//无论是否执行了超时处理，最后都会调用原始的 setsockopt_f 函数来设置实际的套接字选项。
+    return setsockopt_f(sockfd, level, optname, optval, optlen);
+}
+
+
+
 }
