@@ -33,7 +33,7 @@ bool FdCtx::init()
 {
     if (m_isInit)
     {
-         retur ntrue;
+         return true;
     }
 
     struct stat statbuf;
@@ -105,7 +105,7 @@ FdManager::FdManager()
     m_datas.resize(64);
 }
 
-std::shared_ptr<FdCtx> FdManager::get(int fd, bool auto_create = false)
+std::shared_ptr<FdCtx> FdManager::get(int fd, bool auto_create)
 {
     if (fd == -1)   return nullptr;
 
