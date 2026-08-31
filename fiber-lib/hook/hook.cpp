@@ -569,7 +569,7 @@ int fcntl(int fd, int cmd, ... /* arg */ )
 
 
 // ==========================================================================================================================================================
-// sockop函数操
+// sockop函数操作
 // ==========================================================================================================================================================
 
 int getsockopt(int sockfd, int level, int optname, void *optval, socklen_t *optlen)
@@ -599,6 +599,60 @@ int setsockopt(int sockfd, int level, int optname, const void *optval, socklen_t
     return setsockopt_f(sockfd, level, optname, optval, optlen);
 }
 
+
+// ==========================================================================================================================================================
+// IO 操作钩子
+// ==========================================================================================================================================================
+
+ssize_t read(int fd, void *buf, size_t count)
+{
+	return do_io(fd, read_f, "read", sylar::IOManager::READ, SO_RCVTIMEO, buf, count);	
+}
+
+ssize_t readv(int fd, const struct iovec *iov, int iovcnt)
+{
+	return do_io(fd, readv_f, "readv", sylar::IOManager::READ, SO_RCVTIMEO, iov, iovcnt);	
+}
+
+ssize_t recv(int sockfd, void *buf, size_t len, int flags)
+{
+	return do_io(sockfd, recv_f, "recv", sylar::IOManager::READ, SO_RCVTIMEO, buf, len, flags);	
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addrlen)
+{
+	return do_io(sockfd, recvfrom_f, "recvfrom", sylar::IOManager::READ, SO_RCVTIMEO, buf, len, flags, src_addr, addrlen);	
+}
+
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+	return do_io(sockfd, recvmsg_f, "recvmsg", sylar::IOManager::READ, SO_RCVTIMEO, msg, flags);	
+}
+
+ssize_t write(int fd, const void *buf, size_t count)
+{
+	return do_io(fd, write_f, "write", sylar::IOManager::WRITE, SO_SNDTIMEO, buf, count);	
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
+{
+	return do_io(fd, writev_f, "writev", sylar::IOManager::WRITE, SO_SNDTIMEO, iov, iovcnt);	
+}
+
+ssize_t send(int sockfd, const void *buf, size_t len, int flags)
+{
+	return do_io(sockfd, send_f, "send", sylar::IOManager::WRITE, SO_SNDTIMEO, buf, len, flags);	
+}
+
+ssize_t sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addrlen)
+{
+	return do_io(sockfd, sendto_f, "sendto", sylar::IOManager::WRITE, SO_SNDTIMEO, buf, len, flags, dest_addr, addrlen);	
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
+{
+	return do_io(sockfd, sendmsg_f, "sendmsg", sylar::IOManager::WRITE, SO_SNDTIMEO, msg, flags);	
+}
 
 
 }
